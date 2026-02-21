@@ -1,0 +1,2 @@
+10021	IGNORE	X-Content-Type-Options — handled by Istio egress
+10035	IGNORE	HSTS — enforced at ALB level

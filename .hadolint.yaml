@@ -1,0 +1,2 @@
+ignore:
+  - DL3006  # distroless image name encodes the version (nodejs20-debian12)

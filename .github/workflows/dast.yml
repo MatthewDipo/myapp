@@ -1,0 +1,46 @@
+name: DAST — Staging Scan (both regions)
+
+on:
+  workflow_run:
+    workflows: ["CI — Build · Scan · Multi-Region Deploy"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  zap-use1:
+    name: "🕷️  ZAP DAST — us-east-1 staging"
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sleep 90   # ArgoCD sync time
+      - uses: zaproxy/action-full-scan@v0.10.0
+        with:
+          target: '${{ vars.STAGING_URL_USE1 }}'
+          rules_file_name: '.zap/rules.tsv'
+          fail_action: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-use1-${{ github.run_id }}
+          path: report_html.html
+          retention-days: 90
+
+  zap-usw2:
+    name: "🕷️  ZAP DAST — us-west-2 staging"
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: sleep 90
+      - uses: zaproxy/action-full-scan@v0.10.0
+        with:
+          target: '${{ vars.STAGING_URL_USW2 }}'
+          rules_file_name: '.zap/rules.tsv'
+          fail_action: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-usw2-${{ github.run_id }}
+          path: report_html.html
+          retention-days: 90

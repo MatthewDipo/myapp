@@ -1,0 +1,11 @@
+node_modules
+.git
+.github
+coverage
+*.log
+*.md
+.env*
+docker-compose*
+Dockerfile*
+.pre-commit-config.yaml
+.secrets.baseline

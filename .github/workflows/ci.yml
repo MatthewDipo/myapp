@@ -1,0 +1,346 @@
+name: CI — Build · Scan · Multi-Region Deploy
+
+on:
+  push:
+    branches: [main, "feature/**", "fix/**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token:        write   # OIDC token for AWS
+  contents:        read
+  security-events: write   # SARIF → GitHub Security tab
+
+env:
+  PRIMARY_REGION:   us-east-1
+  SECONDARY_REGION: us-west-2
+  ECR_USE1: ${{ secrets.ECR_REGISTRY_USE1 }}   # <mgmt>.dkr.ecr.us-east-1.amazonaws.com
+  ECR_USW2: ${{ secrets.ECR_REGISTRY_USW2 }}   # <mgmt>.dkr.ecr.us-west-2.amazonaws.com
+  IMAGE_TAG: sha-${{ github.sha }}
+
+# Cancel stale runs for the same branch
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # 1. Secret Detection — blocks everything downstream
+  # ══════════════════════════════════════════════════════════════════════════
+  secrets-scan:
+    name: "🔐 Secret Detection"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # Full history — TruffleHog scans all commits
+
+      - name: TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified --fail
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # 2-4. SAST, SCA, IaC — run in parallel after secret scan passes
+  # ══════════════════════════════════════════════════════════════════════════
+  sast:
+    name: "🔍 SAST — Semgrep"
+    runs-on: ubuntu-latest
+    needs: secrets-scan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: semgrep/semgrep-action@v1
+        with:
+          config: "p/owasp-top-ten p/secrets p/nodejs"
+          generateSarif: "1"
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with: { sarif_file: semgrep.sarif, category: semgrep }
+
+  sca:
+    name: "📦 SCA — Snyk"
+    runs-on: ubuntu-latest
+    needs: secrets-scan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --sarif-file-output=snyk.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with: { sarif_file: snyk.sarif, category: snyk }
+      # Generate SBOM for HIPAA audit trail
+      - run: npx --yes @cyclonedx/cyclonedx-npm --output-format json --output-file sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.json
+          retention-days: 365
+
+  iac-scan:
+    name: "🏗️  IaC Scan — Checkov"
+    runs-on: ubuntu-latest
+    needs: secrets-scan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: terraform,dockerfile
+          soft_fail: false
+          output_format: sarif
+          output_file_path: checkov.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with: { sarif_file: checkov.sarif, category: checkov }
+
+  unit-tests:
+    name: "🧪 Unit Tests"
+    runs-on: ubuntu-latest
+    needs: secrets-scan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - run: npm test -- --ci --coverage --coverageReporters=lcov
+      - uses: codecov/codecov-action@v3
+        with: { files: coverage/lcov.info }
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # 5. Build — only after ALL security scans + tests pass
+  # ══════════════════════════════════════════════════════════════════════════
+  build:
+    name: "🐳 Build Container"
+    runs-on: ubuntu-latest
+    needs: [sast, sca, iac-scan, unit-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (load locally, don't push yet)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: production
+          push: false
+          load: true
+          tags: myapp:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+      - name: Save image tar
+        run: docker save myapp:${{ env.IMAGE_TAG }} | gzip > /tmp/image.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ github.sha }}
+          path: /tmp/image.tar.gz
+          retention-days: 1
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # 6. Container Scan
+  # ══════════════════════════════════════════════════════════════════════════
+  container-scan:
+    name: "🛡️  Container Scan — Trivy"
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-${{ github.sha }}
+          path: /tmp
+      - run: docker load < /tmp/image.tar.gz
+      - uses: aquasecurity/trivy-action@master
+        with:
+          image-ref:      myapp:${{ env.IMAGE_TAG }}
+          format:         sarif
+          output:         trivy.sarif
+          severity:       CRITICAL,HIGH
+          exit-code:      '1'
+          ignore-unfixed: true
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with: { sarif_file: trivy.sarif, category: trivy }
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # 7. Push to BOTH regions + sign (primary only — replication handles usw2)
+  # ══════════════════════════════════════════════════════════════════════════
+  push-and-sign:
+    name: "📤 Push & Sign — Both Regions"
+    runs-on: ubuntu-latest
+    needs: container-scan
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    outputs:
+      digest-use1: ${{ steps.push-use1.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: image-${{ github.sha }}
+          path: /tmp
+      - run: docker load < /tmp/image.tar.gz
+
+      # ── Push to us-east-1 (primary) ────────────────────────────────────────
+      - name: AWS credentials — us-east-1
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_USE1 }}
+          aws-region:     us-east-1
+
+      - name: Login ECR us-east-1
+        uses: aws-actions/amazon-ecr-login@v2
+        with: { registries: "${{ secrets.MGMT_ACCOUNT_ID }}" }
+
+      - name: Tag + push us-east-1
+        id: push-use1
+        run: |
+          FULL_TAG="${{ env.ECR_USE1 }}/myapp:${{ env.IMAGE_TAG }}"
+          docker tag myapp:${{ env.IMAGE_TAG }} "$FULL_TAG"
+          docker push "$FULL_TAG"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$FULL_TAG" | cut -d@ -f2)
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "Pushed: $FULL_TAG@$DIGEST"
+
+      # ECR replication (us-east-1 → us-west-2) runs automatically.
+      # Wait for replication before signing the usw2 digest.
+      - name: Wait for ECR replication to us-west-2
+        run: |
+          echo "Waiting up to 3 minutes for replication..."
+          for i in $(seq 1 18); do
+            if aws ecr describe-images \
+              --registry-id ${{ secrets.MGMT_ACCOUNT_ID }} \
+              --repository-name myapp \
+              --image-ids imageTag=${{ env.IMAGE_TAG }} \
+              --region us-west-2 &>/dev/null; then
+              echo "✅ Image replicated to us-west-2 (attempt $i)"
+              break
+            fi
+            echo "Attempt $i/18 — sleeping 10s..."
+            sleep 10
+          done
+
+      # ── Sign both region digests (keyless OIDC) ────────────────────────────
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign us-east-1 image
+        run: |
+          cosign sign --yes \
+            --oidc-issuer https://token.actions.githubusercontent.com \
+            ${{ env.ECR_USE1 }}/myapp:${{ env.IMAGE_TAG }}@${{ steps.push-use1.outputs.digest }}
+        env:
+          COSIGN_EXPERIMENTAL: 1
+
+      - name: Sign us-west-2 image
+        run: |
+          # Get the replicated digest from us-west-2
+          DIGEST_USW2=$(aws ecr describe-images \
+            --registry-id ${{ secrets.MGMT_ACCOUNT_ID }} \
+            --repository-name myapp \
+            --image-ids imageTag=${{ env.IMAGE_TAG }} \
+            --region us-west-2 \
+            --query 'imageDetails[0].imageDigest' --output text)
+          cosign sign --yes \
+            --oidc-issuer https://token.actions.githubusercontent.com \
+            ${{ env.ECR_USW2 }}/myapp:${{ env.IMAGE_TAG }}@${DIGEST_USW2}
+        env:
+          COSIGN_EXPERIMENTAL: 1
+
+      # ── Store SBOM in audit bucket (HIPAA) ────────────────────────────────
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+
+      - name: Upload SBOM to audit S3
+        run: |
+          aws s3 cp sbom.json \
+            s3://myapp-audit-${{ secrets.MGMT_ACCOUNT_ID }}-us-east-1/ci/sbom/${{ github.sha }}.json \
+            --metadata "git-sha=${{ github.sha }},actor=${{ github.actor }},build=${{ github.run_id }}"
+
+  # ══════════════════════════════════════════════════════════════════════════
+  # 8-10. GitOps promotions — update image tag in gitops repo per env
+  #       ArgoCD on each cluster (both regions) detects the change and syncs
+  # ══════════════════════════════════════════════════════════════════════════
+  promote-dev:
+    name: "🚀 Promote → Dev (both regions)"
+    runs-on: ubuntu-latest
+    needs: push-and-sign
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.GITHUB_USER }}/myapp-gitops
+          token:      ${{ secrets.GITOPS_PAT }}
+          path: gitops
+
+      - name: Update dev image tag
+        run: |
+          cd gitops
+          yq e '.image.tag = "${{ env.IMAGE_TAG }}"' -i apps/myapp/values-dev.yaml
+          git config user.email "ci-bot@yourcompany.com"
+          git config user.name  "CI Bot"
+          git add apps/myapp/values-dev.yaml
+          git commit -m "chore(dev): promote myapp to ${{ env.IMAGE_TAG }}"
+          git push
+      # ArgoCD on myapp-dev-use1 AND myapp-dev-usw2 both watch the same
+      # gitops repo and sync independently — both clusters update in parallel
+
+  promote-staging:
+    name: "🚀 Promote → Staging (both regions)"
+    runs-on: ubuntu-latest
+    needs: promote-dev
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.GITHUB_USER }}/myapp-gitops
+          token:      ${{ secrets.GITOPS_PAT }}
+          path: gitops
+      - name: Update staging image tag
+        run: |
+          cd gitops
+          yq e '.image.tag = "${{ env.IMAGE_TAG }}"' -i apps/myapp/values-staging.yaml
+          git config user.email "ci-bot@yourcompany.com"
+          git config user.name  "CI Bot"
+          git add apps/myapp/values-staging.yaml
+          git commit -m "chore(staging): promote myapp to ${{ env.IMAGE_TAG }}"
+          git push
+
+  promote-production:
+    name: "🚀 Promote → Production (both regions) [APPROVAL REQUIRED]"
+    runs-on: ubuntu-latest
+    needs: promote-staging
+    environment: production        # ← GitHub pauses here until approved
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.GITHUB_USER }}/myapp-gitops
+          token:      ${{ secrets.GITOPS_PAT }}
+          path: gitops
+      - name: Update production image tag
+        run: |
+          cd gitops
+          yq e '.image.tag = "${{ env.IMAGE_TAG }}"' -i apps/myapp/values-production.yaml
+          git config user.email "ci-bot@yourcompany.com"
+          git config user.name  "CI Bot"
+          git add apps/myapp/values-production.yaml
+          git commit -m "chore(prod): promote myapp to ${{ env.IMAGE_TAG }}"
+          git push
+      - name: Notify Slack
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "✅ *Production deploy complete — both regions*\n*SHA:* ${{ env.IMAGE_TAG }}\n*Approved by:* ${{ github.actor }}\n*Regions:* us-east-1 + us-west-2"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
