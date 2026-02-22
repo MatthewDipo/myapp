@@ -19,7 +19,7 @@ RUN npm test
 # =============================================================================
 # Stage 3: Production image — gcr.io/distroless (no shell, minimal attack surface)
 # =============================================================================
-FROM gcr.io/distroless/nodejs20-debian12 AS production
+FROM gcr.io/distroless/nodejs20-debian12:nonroot AS production
 
 WORKDIR /app
 
