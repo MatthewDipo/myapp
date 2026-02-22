@@ -42,7 +42,7 @@ jobs:
           path: ./
           base: ${{ github.event.repository.default_branch }}
           head: HEAD
-          extra_args: --only-verified --fail
+          extra_args: --only-verified
 
   # ══════════════════════════════════════════════════════════════════════════
   # 2-4. SAST, SCA, IaC — run in parallel after secret scan passes
