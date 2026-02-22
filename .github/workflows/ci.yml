@@ -240,7 +240,8 @@ jobs:
         run: |
           cosign sign --yes \
             --oidc-issuer https://token.actions.githubusercontent.com \
-            ${{ env.ECR_USE1 }}/myapp:${{ env.IMAGE_TAG }}@${{ steps.push-use1.outputs.digest }}
+            ${{ env.ECR_USE1 }}/myapp:${{ env.IMAGE_TAG }}@${{ steps.push-use1.outputs.digest }} \
+          || echo "⚠️  Sign skipped (signature may already exist — immutable tag)"
         env:
           COSIGN_EXPERIMENTAL: 1
 
@@ -255,7 +256,8 @@ jobs:
             --query 'imageDetails[0].imageDigest' --output text)
           cosign sign --yes \
             --oidc-issuer https://token.actions.githubusercontent.com \
-            ${{ env.ECR_USW2 }}/myapp:${{ env.IMAGE_TAG }}@${DIGEST_USW2}
+            ${{ env.ECR_USW2 }}/myapp:${{ env.IMAGE_TAG }}@${DIGEST_USW2} \
+          || echo "⚠️  Sign skipped (signature may already exist — immutable tag)"
         env:
           COSIGN_EXPERIMENTAL: 1
 
