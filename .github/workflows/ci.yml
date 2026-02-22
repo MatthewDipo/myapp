@@ -336,6 +336,7 @@ jobs:
           git commit -m "chore(prod): promote myapp to ${{ env.IMAGE_TAG }}"
           git push
       - name: Notify Slack
+        continue-on-error: true
         uses: slackapi/slack-github-action@v1
         with:
           payload: |
