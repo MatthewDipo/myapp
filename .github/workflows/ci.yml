@@ -278,7 +278,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ secrets.GITHUB_USER }}/myapp-gitops
+          repository: ${{ secrets.GH_USER }}/myapp-gitops
           token:      ${{ secrets.GITOPS_PAT }}
           path: gitops
 
@@ -302,7 +302,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ secrets.GITHUB_USER }}/myapp-gitops
+          repository: ${{ secrets.GH_USER }}/myapp-gitops
           token:      ${{ secrets.GITOPS_PAT }}
           path: gitops
       - name: Update staging image tag
@@ -323,7 +323,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: ${{ secrets.GITHUB_USER }}/myapp-gitops
+          repository: ${{ secrets.GH_USER }}/myapp-gitops
           token:      ${{ secrets.GITOPS_PAT }}
           path: gitops
       - name: Update production image tag
