@@ -247,16 +247,10 @@ jobs:
 
       - name: Sign us-west-2 image
         run: |
-          # Get the replicated digest from us-west-2
-          DIGEST_USW2=$(aws ecr describe-images \
-            --registry-id ${{ secrets.MGMT_ACCOUNT_ID }} \
-            --repository-name myapp \
-            --image-ids imageTag=${{ env.IMAGE_TAG }} \
-            --region us-west-2 \
-            --query 'imageDetails[0].imageDigest' --output text)
+          # ECR replication preserves the image digest — use the same digest as us-east-1
           cosign sign --yes \
             --oidc-issuer https://token.actions.githubusercontent.com \
-            ${{ env.ECR_USW2 }}/myapp:${{ env.IMAGE_TAG }}@${DIGEST_USW2} \
+            ${{ env.ECR_USW2 }}/myapp:${{ env.IMAGE_TAG }}@${{ steps.push-use1.outputs.digest }} \
           || echo "⚠️  Sign skipped (signature may already exist — immutable tag)"
         env:
           COSIGN_EXPERIMENTAL: 1
