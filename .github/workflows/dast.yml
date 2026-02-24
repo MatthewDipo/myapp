@@ -6,11 +6,16 @@ on:
     types: [completed]
     branches: [main]
 
+# workflow_run uses a restricted token — must declare issues: write explicitly
+permissions:
+  issues: write
+  contents: read
+
 jobs:
   zap-use1:
     name: "🕷️  ZAP DAST — us-east-1 staging"
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' && vars.STAGING_URL_USE1 != '' }}
     steps:
       - uses: actions/checkout@v4
       - run: sleep 90   # ArgoCD sync time
@@ -29,7 +34,7 @@ jobs:
   zap-usw2:
     name: "🕷️  ZAP DAST — us-west-2 staging"
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' && vars.STAGING_URL_USW2 != '' }}
     steps:
       - uses: actions/checkout@v4
       - run: sleep 90

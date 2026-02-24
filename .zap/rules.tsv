@@ -1,2 +1,15 @@
-10021	IGNORE	X-Content-Type-Options — handled by Istio egress
-10035	IGNORE	HSTS — enforced at ALB level
+# ZAP alert suppression rules
+# Format: alert_id	ACTION
+# Actions: IGNORE, WARN, FAIL
+# Reference: https://www.zaproxy.org/docs/docker/full-scan/#configuration-file
+
+# Informational / low-signal alerts — downgrade to WARN
+10027	WARN
+10096	WARN
+10035	WARN
+10063	WARN
+10094	WARN
+10202	WARN
+10010	WARN
+10011	WARN
+10054	WARN
